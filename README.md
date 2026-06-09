@@ -89,7 +89,7 @@ The `input: ["text", "image"]` field is required — it tells Pi the model suppo
 
 ### 3. Configure the vision model
 
-**Recommended: Use the /vision-config command (persistent)**
+**Recommended: Use the /vision command (persistent)**
 
 In any Pi session with the extension loaded:
 
@@ -101,6 +101,8 @@ In any Pi session with the extension loaded:
 Settings are saved to `~/.pi/agent/vision-tool.json` and persist across all sessions.
 
 Run `/vision` with no arguments to see current configuration.
+
+> **Note:** After running `/vision config` for the first time, the change won't take effect until you reload the extension with `/reload` or restart Pi. On subsequent sessions the config file is read automatically on startup.
 
 **Legacy: Environment variables**
 

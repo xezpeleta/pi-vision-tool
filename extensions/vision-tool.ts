@@ -17,6 +17,8 @@
  *   and persist across all sessions. Run `/vision` with no arguments to see
  *   current configuration.
  *
+ *   Note: after /vision config, /reload or restart for the change to take effect.
+ *
  * **Legacy: environment variables**
  *   PI_VISION_PROVIDER=my-provider  PI_VISION_MODEL=my-vision-model
  *   Env vars are read at session start as a fallback when no config file exists.
