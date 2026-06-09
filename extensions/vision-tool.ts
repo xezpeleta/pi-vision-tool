@@ -309,7 +309,11 @@ async function optimizeImage(
  * - The effective reasoning level is not "off"
  *
  * Respects the model's `thinkingLevelMap` if defined,
- * falling back to standard `reasoning_effort`.
+ * and the model's `compat.thinkingFormat` for provider-specific formats:
+ * - `qwen` / `qwen-chat-template`: sends `enable_thinking: true/false`
+ * - `deepseek`: sends `reasoning: { effort }`
+ * - `openrouter`: sends `reasoning: { effort }`
+ * - default (OpenAI): sends `reasoning_effort`
  */
 function buildReasoningParams(
   visionModel: Model<Api>,
@@ -317,23 +321,41 @@ function buildReasoningParams(
 ): Record<string, unknown> | undefined {
   if (!visionModel.reasoning || level === "off") return undefined;
 
-  // Check if model has a thinkingLevelMap with a custom value for this level
+  // Resolve the effective value from thinkingLevelMap if present
   const levelMap = (visionModel as any).thinkingLevelMap as
     | Record<string, string | null>
     | undefined;
+  let effectiveLevel = level;
 
   if (levelMap) {
     const mapped = levelMap[level];
     if (mapped === null) return undefined; // level explicitly unsupported
     if (typeof mapped === "string") {
-      return { reasoning_effort: mapped };
+      effectiveLevel = mapped;
     }
-    // omitted = use default provider mapping (standard effort)
-    return { reasoning_effort: level };
   }
 
-  // No level map: send standard reasoning_effort
-  return { reasoning_effort: level };
+  // Determine the parameter format based on compat.thinkingFormat
+  const compat = (visionModel as any).compat as
+    | { thinkingFormat?: string }
+    | undefined;
+  const format = compat?.thinkingFormat;
+
+  if (format === "qwen" || format === "qwen-chat-template") {
+    // Qwen models use enable_thinking: true/false
+    const enable = effectiveLevel !== "off";
+    if (format === "qwen-chat-template") {
+      return { chat_template_kwargs: { enable_thinking: enable } };
+    }
+    return { enable_thinking: enable };
+  }
+
+  if (format === "deepseek" || format === "openrouter") {
+    return { reasoning: { effort: effectiveLevel } };
+  }
+
+  // Default: standard OpenAI reasoning_effort
+  return { reasoning_effort: effectiveLevel };
 }
 
 async function callVisionModel(
