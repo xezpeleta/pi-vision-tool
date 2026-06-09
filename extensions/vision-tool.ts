@@ -10,9 +10,18 @@
  * ## Configuration
  *
  * The vision model is resolved from Pi's model registry (models.json).
- * Configure the provider and model via environment variables:
- *   PI_VISION_PROVIDER=my-provider
- *   PI_VISION_MODEL=my-vision-model
+ *
+ * **Recommended: /vision command (persistent)**
+ *   Use `/vision config provider my-provider` and `/vision config model my-vision-model`
+ *   to set the vision model. Settings are saved to `~/.pi/agent/vision-tool.json`
+ *   and persist across all sessions. Run `/vision` with no arguments to see
+ *   current configuration.
+ *
+ * **Legacy: environment variables**
+ *   PI_VISION_PROVIDER=my-provider  PI_VISION_MODEL=my-vision-model
+ *   Env vars are read at session start as a fallback when no config file exists.
+ *
+ * **Priority:** /vision config settings > env vars > built-in defaults
  *
  * Make sure the provider and model are defined in ~/.pi/agent/models.json
  * with `input: ["text", "image"]`.
@@ -41,21 +50,34 @@
  * - Comparison: "Compare these two screenshots — what changed?"
  */
 
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { Model } from "@earendil-works/pi-ai";
 import type { Api } from "@earendil-works/pi-ai";
 
-const VISION_PROVIDER = process.env.PI_VISION_PROVIDER;
-const VISION_MODEL_ID = process.env.PI_VISION_MODEL;
+// ---------------------------------------------------------------------------
+// Config file path
+// ---------------------------------------------------------------------------
+const CONFIG_PATH = join(getAgentDir(), "vision-tool.json");
 
-/** Maximum image dimension (width or height). Larger images are downscaled proportionally. */
-const MAX_IMAGE_DIM = parseInt(process.env.PI_VISION_MAX_DIM ?? "1568", 10);
+// ---------------------------------------------------------------------------
+// Runtime config (mutable, populated on session_start)
+// ---------------------------------------------------------------------------
+interface VisionConfig {
+  provider?: string;
+  model?: string;
+  maxDimension: number;
+  jpegQuality: number;
+}
 
-/** JPEG quality when converting from lossless formats (1-100). */
-const JPEG_QUALITY = parseInt(process.env.PI_VISION_JPEG_QUALITY ?? "85", 10);
+let config: VisionConfig = {
+  maxDimension: parseInt(process.env.PI_VISION_MAX_DIM ?? "1568", 10),
+  jpegQuality: parseInt(process.env.PI_VISION_JPEG_QUALITY ?? "85", 10),
+};
 
 const VISION_SYSTEM_PROMPT = [
   "You are an expert vision analysis assistant.",
@@ -69,6 +91,82 @@ const VISION_SYSTEM_PROMPT = [
   "- Be precise and factual. Do not invent details that are not in the image.",
   "- Structure your response clearly with markdown formatting when appropriate.",
 ].join("\n");
+
+// ---------------------------------------------------------------------------
+// Config persistence helpers
+// ---------------------------------------------------------------------------
+
+/** Load config from the JSON file. Returns null if file doesn't exist. */
+function loadConfigFile(): VisionConfig | null {
+  try {
+    if (!existsSync(CONFIG_PATH)) return null;
+    const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
+    return {
+      provider: raw.provider || undefined,
+      model: raw.model || undefined,
+      maxDimension: raw.maxDimension ?? config.maxDimension,
+      jpegQuality: raw.jpegQuality ?? config.jpegQuality,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Save current config to the JSON file. */
+function saveConfigFile() {
+  try {
+    mkdirSync(dirname(CONFIG_PATH), { recursive: true });
+  } catch {
+    // directory already exists or no perms — ignore
+  }
+  writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n");
+}
+
+/**
+ * Resolve config with priority:
+ *   1. Config file (~/.pi/agent/vision-tool.json)
+ *   2. Environment variables (PI_VISION_PROVIDER, PI_VISION_MODEL, etc.)
+ *   3. Built-in defaults
+ *
+ * The file wins over env vars so that /vision config changes are sticky.
+ */
+function resolveConfig(): VisionConfig {
+  const fileCfg = loadConfigFile();
+  return {
+    provider: fileCfg?.provider || process.env.PI_VISION_PROVIDER || undefined,
+    model: fileCfg?.model || process.env.PI_VISION_MODEL || undefined,
+    maxDimension:
+      fileCfg?.maxDimension ??
+      parseInt(process.env.PI_VISION_MAX_DIM ?? "1568", 10),
+    jpegQuality:
+      fileCfg?.jpegQuality ??
+      parseInt(process.env.PI_VISION_JPEG_QUALITY ?? "85", 10),
+  };
+}
+
+/**
+ * Build a human-readable config summary for the /vision command.
+ */
+function configSummary(): string {
+  const src = loadConfigFile() ? "config file" : process.env.PI_VISION_PROVIDER ? "env vars" : "none";
+  const provider = config.provider ?? "(not set)";
+  const model = config.model ?? "(not set)";
+  return [
+    `Vision tool configuration (source: ${src})`,
+    `  Provider:     ${provider}`,
+    `  Model:        ${model}`,
+    `  Max dim:      ${config.maxDimension}px`,
+    `  JPEG quality: ${config.jpegQuality}`,
+    ``,
+    `Config file: ${CONFIG_PATH}`,
+    ``,
+    "Use /vision config provider <name> or /vision config model <name> to set.",
+  ].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Image processing
+// ---------------------------------------------------------------------------
 
 async function imageToBase64(
   pathOrData: string,
@@ -113,7 +211,7 @@ async function imageToBase64(
 
 /**
  * Optimize an image before sending to the vision model.
- * - Downscales if larger than MAX_IMAGE_DIM on either axis
+ * - Downscales if larger than config.maxDimension on either axis
  * - Strips alpha channel (RGBA → RGB)
  * - Converts lossless PNG to JPEG for smaller payload
  * Falls back to raw bytes if sharp is not available.
@@ -135,8 +233,8 @@ async function optimizeImage(
     const height = metadata.height ?? 0;
 
     // Downscale if needed
-    if (width > MAX_IMAGE_DIM || height > MAX_IMAGE_DIM) {
-      pipeline = pipeline.resize(MAX_IMAGE_DIM, MAX_IMAGE_DIM, {
+    if (width > config.maxDimension || height > config.maxDimension) {
+      pipeline = pipeline.resize(config.maxDimension, config.maxDimension, {
         fit: "inside",
         withoutEnlargement: true,
       });
@@ -149,7 +247,7 @@ async function optimizeImage(
 
     // Convert to JPEG for smaller payload (except GIF)
     if (originalMime !== "image/gif") {
-      const optimized = await pipeline.jpeg({ quality: JPEG_QUALITY }).toBuffer();
+      const optimized = await pipeline.jpeg({ quality: config.jpegQuality }).toBuffer();
       return { mimeType: "image/jpeg", data: optimized.toString("base64") };
     }
 
@@ -201,7 +299,7 @@ async function callVisionModel(
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: VISION_MODEL_ID,
+      model: visionModel.id,
       messages,
       max_tokens: 4096,
       temperature: 0,
@@ -221,7 +319,208 @@ async function callVisionModel(
   return json.choices?.[0]?.message?.content ?? "(no response from vision model)";
 }
 
+// ---------------------------------------------------------------------------
+// Extension entry point
+// ---------------------------------------------------------------------------
+
 export default function visionToolExtension(pi: ExtensionAPI) {
+  // -----------------------------------------------------------------------
+  // Session lifecycle: load & persist config
+  // -----------------------------------------------------------------------
+
+  pi.on("session_start", async (_event, ctx) => {
+    // Resolve config from file/env, then check for session-persisted overrides
+    config = resolveConfig();
+
+    // Restore any mid-session config changes from session entries
+    const entries = ctx.sessionManager.getEntries();
+    for (const entry of entries) {
+      if (entry.type === "custom" && entry.customType === "vision-config") {
+        const data = entry.data as Partial<VisionConfig> | undefined;
+        if (data?.provider !== undefined) config.provider = data.provider || undefined;
+        if (data?.model !== undefined) config.model = data.model || undefined;
+        if (data?.maxDimension !== undefined) config.maxDimension = data.maxDimension;
+        if (data?.jpegQuality !== undefined) config.jpegQuality = data.jpegQuality;
+      }
+    }
+
+    updateStatus(ctx);
+  });
+
+  /**
+   * Persist the current config into the session file.
+   * Called whenever config changes via /vision config.
+   */
+  function persistConfig() {
+    pi.appendEntry("vision-config", { ...config });
+  }
+
+  // -----------------------------------------------------------------------
+  // /vision command
+  // -----------------------------------------------------------------------
+
+  pi.registerCommand("vision", {
+    description: "Vision tool settings (config, show, clear)",
+    handler: async (args, ctx) => {
+      const trimmed = args?.trim() ?? "";
+
+      // No args: show current config
+      if (!trimmed) {
+        ctx.ui.notify(configSummary(), "info");
+        return;
+      }
+
+      // Parse subcommand
+      const parts = trimmed.split(/\s+/);
+      const subcommand = parts[0].toLowerCase();
+      const rest = parts.slice(1).join(" ");
+
+      // /vision show — show current config
+      if (subcommand === "show" || subcommand === "status") {
+        ctx.ui.notify(configSummary(), "info");
+        return;
+      }
+
+      // /vision clear — reset to defaults
+      if (subcommand === "clear" || subcommand === "reset") {
+        config.provider = undefined;
+        config.model = undefined;
+        config.maxDimension = parseInt(process.env.PI_VISION_MAX_DIM ?? "1568", 10);
+        config.jpegQuality = parseInt(process.env.PI_VISION_JPEG_QUALITY ?? "85", 10);
+        saveConfigFile();
+        persistConfig();
+        updateStatus(ctx);
+        ctx.ui.notify("Vision config reset to defaults", "info");
+        return;
+      }
+
+      // /vision config <setting> [value]
+      if (subcommand === "config" || subcommand === "cfg") {
+        const settingParts = rest.split(/\s+/);
+        const setting = settingParts[0]?.toLowerCase();
+        const value = settingParts.slice(1).join(" ");
+
+        if (!setting) {
+          ctx.ui.notify(configSummary(), "info");
+          return;
+        }
+
+        if (setting === "provider") {
+          if (!value) {
+            ctx.ui.notify(`Current provider: ${config.provider ?? "(not set)"}`, "info");
+            return;
+          }
+          config.provider = value || undefined;
+          saveConfigFile();
+          persistConfig();
+          updateStatus(ctx);
+          ctx.ui.notify(`Vision provider set to "${config.provider}" (saved to ${CONFIG_PATH})`, "info");
+          return;
+        }
+
+        if (setting === "model") {
+          if (!value) {
+            ctx.ui.notify(`Current model: ${config.model ?? "(not set)"}`, "info");
+            return;
+          }
+          config.model = value || undefined;
+          saveConfigFile();
+          persistConfig();
+          updateStatus(ctx);
+          ctx.ui.notify(`Vision model set to "${config.model}" (saved to ${CONFIG_PATH})`, "info");
+          return;
+        }
+
+        if (setting === "max-dim" || setting === "maxdim") {
+          if (!value) {
+            ctx.ui.notify(`Current max dimension: ${config.maxDimension}px`, "info");
+            return;
+          }
+          const dim = parseInt(value, 10);
+          if (isNaN(dim) || dim < 1) {
+            ctx.ui.notify(`Invalid dimension: "${value}". Must be a positive number.`, "error");
+            return;
+          }
+          config.maxDimension = dim;
+          saveConfigFile();
+          persistConfig();
+          ctx.ui.notify(`Max image dimension set to ${config.maxDimension}px`, "info");
+          return;
+        }
+
+        if (setting === "quality" || setting === "jpeg-quality") {
+          if (!value) {
+            ctx.ui.notify(`Current JPEG quality: ${config.jpegQuality}`, "info");
+            return;
+          }
+          const q = parseInt(value, 10);
+          if (isNaN(q) || q < 1 || q > 100) {
+            ctx.ui.notify(`Invalid quality: "${value}". Must be 1-100.`, "error");
+            return;
+          }
+          config.jpegQuality = q;
+          saveConfigFile();
+          persistConfig();
+          ctx.ui.notify(`JPEG quality set to ${config.jpegQuality}`, "info");
+          return;
+        }
+
+        ctx.ui.notify(
+          `Unknown config setting: "${setting}". Use: provider, model, max-dim, or quality`,
+          "error",
+        );
+        return;
+      }
+
+      // Shorthand: /vision provider <name> or /vision model <name>
+      if (subcommand === "provider") {
+        if (!rest) {
+          ctx.ui.notify(`Current provider: ${config.provider ?? "(not set)"}`, "info");
+          return;
+        }
+        config.provider = rest || undefined;
+        saveConfigFile();
+        persistConfig();
+        updateStatus(ctx);
+        ctx.ui.notify(`Vision provider set to "${config.provider}" (saved to ${CONFIG_PATH})`, "info");
+        return;
+      }
+
+      if (subcommand === "model") {
+        if (!rest) {
+          ctx.ui.notify(`Current model: ${config.model ?? "(not set)"}`, "info");
+          return;
+        }
+        config.model = rest || undefined;
+        saveConfigFile();
+        persistConfig();
+        updateStatus(ctx);
+        ctx.ui.notify(`Vision model set to "${config.model}" (saved to ${CONFIG_PATH})`, "info");
+        return;
+      }
+
+      ctx.ui.notify(
+        `Unknown subcommand: "${subcommand}". Use: config, show, clear (or provider/model)`,
+        "error",
+      );
+    },
+  });
+
+  /**
+   * Update the footer status bar to show current vision config.
+   */
+  function updateStatus(ctx: { ui: { setStatus: (id: string, text: string | undefined) => void } }) {
+    if (config.provider && config.model) {
+      ctx.ui.setStatus("vision", `👁 ${config.provider}/${config.model}`);
+    } else {
+      ctx.ui.setStatus("vision", undefined);
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // describe_image tool
+  // -----------------------------------------------------------------------
+
   pi.registerTool({
     name: "describe_image",
     label: "Describe Image",
@@ -270,7 +569,7 @@ export default function visionToolExtension(pi: ExtensionAPI) {
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       // Validate configuration
-      if (!VISION_PROVIDER || !VISION_MODEL_ID) {
+      if (!config.provider || !config.model) {
         return {
           content: [
             {
@@ -278,10 +577,11 @@ export default function visionToolExtension(pi: ExtensionAPI) {
               text: [
                 "Vision tool is not configured.",
                 "",
-                "Set the PI_VISION_PROVIDER and PI_VISION_MODEL environment variables",
-                "to point to a vision-capable model in your models.json.",
+                "Use /vision to set the vision provider and model:",
+                "  /vision config provider my-provider",
+                "  /vision config model my-vision-model",
                 "",
-                "Example:",
+                "Or set environment variables (legacy):",
                 "  export PI_VISION_PROVIDER=my-provider",
                 "  export PI_VISION_MODEL=my-vision-model",
               ].join("\n"),
@@ -293,19 +593,19 @@ export default function visionToolExtension(pi: ExtensionAPI) {
       }
 
       // Resolve the vision model from the registry
-      const visionModel = ctx.modelRegistry.find(VISION_PROVIDER!, VISION_MODEL_ID!);
+      const visionModel = ctx.modelRegistry.find(config.provider!, config.model!);
       if (!visionModel) {
         return {
           content: [
             {
               type: "text",
               text: [
-                `Vision tool error: model "${VISION_PROVIDER}/${VISION_MODEL_ID}" not found in model registry.`,
+                `Vision tool error: model "${config.provider}/${config.model}" not found in model registry.`,
                 "",
                 "Make sure:",
                 "1. The provider and model are defined in ~/.pi/agent/models.json",
-                "2. The model has `input: [\"text\", \"image\"]`",
-                "3. PI_VISION_PROVIDER and PI_VISION_MODEL env vars are set correctly",
+                '2. The model has `input: ["text", "image"]`',
+                "3. Use /vision show to check or /vision config to update the configuration",
               ].join("\n"),
             },
           ],
@@ -321,7 +621,7 @@ export default function visionToolExtension(pi: ExtensionAPI) {
           content: [
             {
               type: "text",
-              text: `Vision tool error: unable to resolve API key for "${VISION_PROVIDER}". ${auth.error}`,
+              text: `Vision tool error: unable to resolve API key for "${config.provider}". ${auth.error}`,
             },
           ],
           details: { error: "auth_error", authError: auth.error },
@@ -356,7 +656,7 @@ export default function visionToolExtension(pi: ExtensionAPI) {
         content: [
           {
             type: "text",
-            text: `Analyzing image with ${VISION_MODEL_ID} (${compressLabel})...`,
+            text: `Analyzing image with ${config.model} (${compressLabel})...`,
           },
         ],
       });
@@ -375,7 +675,7 @@ export default function visionToolExtension(pi: ExtensionAPI) {
         return {
           content: [{ type: "text", text: result }],
           details: {
-            model: `${VISION_PROVIDER}/${VISION_MODEL_ID}`,
+            model: `${config.provider}/${config.model}`,
             image_path: params.image_path,
             prompt: params.prompt,
             compressed: compress,

@@ -87,14 +87,29 @@ The `input: ["text", "image"]` field is required — it tells Pi the model suppo
 }
 ```
 
-### 3. Configure environment variables
+### 3. Configure the vision model
+
+**Recommended: Use the /vision-config command (persistent)**
+
+In any Pi session with the extension loaded:
+
+```
+/vision config provider my-vision-provider
+/vision config model my-vision-model
+```
+
+Settings are saved to `~/.pi/agent/vision-tool.json` and persist across all sessions.
+
+Run `/vision` with no arguments to see current configuration.
+
+**Legacy: Environment variables**
 
 ```bash
 export PI_VISION_PROVIDER=my-vision-provider
 export PI_VISION_MODEL=my-vision-model
 ```
 
-These tell the tool which provider and model to use for image analysis.
+Env vars work but must be set before starting Pi and don't persist between sessions. When a config file exists, it takes priority over env vars.
 
 ### 4. (Optional) Install sharp for image compression
 
