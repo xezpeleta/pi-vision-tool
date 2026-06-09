@@ -2,7 +2,20 @@
 
 A [Pi Agent](https://github.com/earendil-works/pi-coding-agent) extension that adds a `describe_image` tool, letting **non-multimodal models** (like DeepSeek V4 Pro, GPT-5 Codex without image support, etc.) delegate image analysis to a vision-capable model.
 
-## How it works
+## Features
+
+The calling model has **full control** over every call, deciding what matters for each image:
+
+| Feature | Parameter | What the model controls |
+|---|---|---|
+| **Compression** | `compress` | `true` for faster/general use, `false` for pixel-perfect accuracy |
+| **Reasoning depth** | `reasoning` | `"off"` for instant answers, `"high"`/`"xhigh"` for complex analysis |
+| **Prompt** | `prompt` | Free-text instruction: "describe", "extract text", "find the bug", ... |
+| **Image source** | `image_path` | File path, data URL, or raw base64 |
+
+This means the model itself decides the cost/quality tradeoff per call — no pre-configuration needed. Just like a developer chooses between a quick `cat` and a deep `git bisect`, the model picks the right tool settings for the job.
+
+### How it works
 
 ```
 ┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
@@ -18,6 +31,28 @@ A [Pi Agent](https://github.com/earendil-works/pi-coding-agent) extension that a
 3. The tool sends the image + prompt to your vision model
 4. The vision model's text response is returned to the calling model as a tool result
 5. The calling model integrates the result into its reasoning
+
+### Reasoning / extended thinking
+
+For vision models with `reasoning: true`, the calling model can choose the reasoning effort per call via the `reasoning` parameter:
+
+| Level | When to use |
+|---|---|
+| `off` | Simple queries: "what color is this?" |
+| `minimal` | Quick checks: "is there an error on this screenshot?" |
+| `low` | Basic descriptions, text extraction |
+| `medium` | UI analysis, layout descriptions |
+| `high` | Architecture diagrams, complex screenshots |
+| `xhigh` | Bug hunting, multi-step visual reasoning |
+
+When omitted, the tool uses the configured default (off by default). The calling model should decide based on task complexity — similar to how it picks `compress: true/false`. Read the [models.md](https://github.com/earendil-works/pi-coding-agent/blob/main/docs/models.md#thinking-level-map) thinking level map section for per-model tuning.
+
+Set the default reasoning level via:
+```bash
+/vision config reasoning-effort medium
+# or via env var:
+export PI_VISION_REASONING_EFFORT=medium
+```
 
 ## Installation
 
@@ -150,6 +185,17 @@ Once installed, any model in your session will see the `describe_image` tool. Ju
 | **Color values** | "What hex color is the header bar?" |
 | **Layout analysis** | "Describe the page layout: sidebar, main content, etc." |
 | **Comparison** | "Compare these two screenshots — what changed?" |
+
+For complex analysis, the calling model can set `reasoning: "high"`:
+
+```json
+{
+  "image_path": "/tmp/architecture.png",
+  "prompt": "Analyze this system architecture diagram in detail",
+  "compress": true,
+  "reasoning": "high"
+}
+```
 
 ### Image formats
 

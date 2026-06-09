@@ -26,6 +26,21 @@
  * Make sure the provider and model are defined in ~/.pi/agent/models.json
  * with `input: ["text", "image"]`.
  *
+ * ## Reasoning / Thinking
+ *
+ * For vision models that support extended thinking (marked with `reasoning: true`
+ * in models.json), the tool can request reasoning effort levels:
+ *   - "off"    — disabled, fast responses (default)
+ *   - "minimal", "low", "medium", "high", "xhigh" — increasing reasoning depth
+ *
+ * The calling model decides per-call which level to use via the `reasoning`
+ * parameter. It should use "off" for simple queries (what color is this?)
+ * and higher levels for complex analysis (architecture diagrams, bug hunting).
+ *
+ * Default level is configurable via:
+ *   /vision config reasoning-effort <level>
+ *   PI_VISION_REASONING_EFFORT=medium
+ *
  * ## Compression
  *
  * Images are automatically preprocessed to reduce payload size and token count:
@@ -65,6 +80,12 @@ import type { Api } from "@earendil-works/pi-ai";
 const CONFIG_PATH = join(getAgentDir(), "vision-tool.json");
 
 // ---------------------------------------------------------------------------
+// Reasoning effort levels
+// ---------------------------------------------------------------------------
+const REASONING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+type ReasoningLevel = (typeof REASONING_LEVELS)[number];
+
+// ---------------------------------------------------------------------------
 // Runtime config (mutable, populated on session_start)
 // ---------------------------------------------------------------------------
 interface VisionConfig {
@@ -72,11 +93,13 @@ interface VisionConfig {
   model?: string;
   maxDimension: number;
   jpegQuality: number;
+  defaultReasoningEffort: ReasoningLevel;
 }
 
 let config: VisionConfig = {
   maxDimension: parseInt(process.env.PI_VISION_MAX_DIM ?? "1568", 10),
   jpegQuality: parseInt(process.env.PI_VISION_JPEG_QUALITY ?? "85", 10),
+  defaultReasoningEffort: "off",
 };
 
 const VISION_SYSTEM_PROMPT = [
@@ -106,6 +129,7 @@ function loadConfigFile(): VisionConfig | null {
       model: raw.model || undefined,
       maxDimension: raw.maxDimension ?? config.maxDimension,
       jpegQuality: raw.jpegQuality ?? config.jpegQuality,
+      defaultReasoningEffort: validateReasoningLevel(raw.defaultReasoningEffort) ?? config.defaultReasoningEffort,
     };
   } catch {
     return null;
@@ -123,6 +147,18 @@ function saveConfigFile() {
 }
 
 /**
+ * Validate and normalize a reasoning level string.
+ */
+function validateReasoningLevel(value: string | undefined): ReasoningLevel | undefined {
+  if (!value) return undefined;
+  const normalized = value.toLowerCase();
+  if ((REASONING_LEVELS as readonly string[]).includes(normalized)) {
+    return normalized as ReasoningLevel;
+  }
+  return undefined;
+}
+
+/**
  * Resolve config with priority:
  *   1. Config file (~/.pi/agent/vision-tool.json)
  *   2. Environment variables (PI_VISION_PROVIDER, PI_VISION_MODEL, etc.)
@@ -132,6 +168,7 @@ function saveConfigFile() {
  */
 function resolveConfig(): VisionConfig {
   const fileCfg = loadConfigFile();
+  const envReasoning = validateReasoningLevel(process.env.PI_VISION_REASONING_EFFORT);
   return {
     provider: fileCfg?.provider || process.env.PI_VISION_PROVIDER || undefined,
     model: fileCfg?.model || process.env.PI_VISION_MODEL || undefined,
@@ -141,6 +178,8 @@ function resolveConfig(): VisionConfig {
     jpegQuality:
       fileCfg?.jpegQuality ??
       parseInt(process.env.PI_VISION_JPEG_QUALITY ?? "85", 10),
+    defaultReasoningEffort:
+      fileCfg?.defaultReasoningEffort ?? envReasoning ?? "off",
   };
 }
 
@@ -153,14 +192,16 @@ function configSummary(): string {
   const model = config.model ?? "(not set)";
   return [
     `Vision tool configuration (source: ${src})`,
-    `  Provider:     ${provider}`,
-    `  Model:        ${model}`,
-    `  Max dim:      ${config.maxDimension}px`,
-    `  JPEG quality: ${config.jpegQuality}`,
+    `  Provider:          ${provider}`,
+    `  Model:             ${model}`,
+    `  Max dim:           ${config.maxDimension}px`,
+    `  JPEG quality:      ${config.jpegQuality}`,
+    `  Reasoning effort:  ${config.defaultReasoningEffort}`,
     ``,
     `Config file: ${CONFIG_PATH}`,
     ``,
-    "Use /vision config provider <name> or /vision config model <name> to set.",
+    "Use /vision config <setting> <value> to set:",
+    "  provider, model, max-dim, quality, reasoning-effort",
   ].join("\n");
 }
 
@@ -260,6 +301,41 @@ async function optimizeImage(
   }
 }
 
+/**
+ * Build the reasoning/thinking parameters for the API request.
+ *
+ * Only sends reasoning params when:
+ * - The vision model has `reasoning: true`
+ * - The effective reasoning level is not "off"
+ *
+ * Respects the model's `thinkingLevelMap` if defined,
+ * falling back to standard `reasoning_effort`.
+ */
+function buildReasoningParams(
+  visionModel: Model<Api>,
+  level: ReasoningLevel,
+): Record<string, unknown> | undefined {
+  if (!visionModel.reasoning || level === "off") return undefined;
+
+  // Check if model has a thinkingLevelMap with a custom value for this level
+  const levelMap = (visionModel as any).thinkingLevelMap as
+    | Record<string, string | null>
+    | undefined;
+
+  if (levelMap) {
+    const mapped = levelMap[level];
+    if (mapped === null) return undefined; // level explicitly unsupported
+    if (typeof mapped === "string") {
+      return { reasoning_effort: mapped };
+    }
+    // omitted = use default provider mapping (standard effort)
+    return { reasoning_effort: level };
+  }
+
+  // No level map: send standard reasoning_effort
+  return { reasoning_effort: level };
+}
+
 async function callVisionModel(
   visionModel: Model<Api>,
   apiKey: string | undefined,
@@ -267,6 +343,7 @@ async function callVisionModel(
   mimeType: string,
   prompt: string,
   signal: AbortSignal | undefined,
+  reasoningLevel: ReasoningLevel,
 ): Promise<string> {
   const baseUrl = visionModel.baseUrl.replace(/\/+$/, "");
 
@@ -292,18 +369,26 @@ async function callVisionModel(
     },
   ];
 
+  const reasoningParams = buildReasoningParams(visionModel, reasoningLevel);
+
+  const body: Record<string, unknown> = {
+    model: visionModel.id,
+    messages,
+    max_tokens: 4096,
+    temperature: 0,
+  };
+
+  if (reasoningParams) {
+    Object.assign(body, reasoningParams);
+  }
+
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({
-      model: visionModel.id,
-      messages,
-      max_tokens: 4096,
-      temperature: 0,
-    }),
+    body: JSON.stringify(body),
     signal,
   });
 
@@ -341,6 +426,7 @@ export default function visionToolExtension(pi: ExtensionAPI) {
         if (data?.model !== undefined) config.model = data.model || undefined;
         if (data?.maxDimension !== undefined) config.maxDimension = data.maxDimension;
         if (data?.jpegQuality !== undefined) config.jpegQuality = data.jpegQuality;
+        if (data?.defaultReasoningEffort !== undefined) config.defaultReasoningEffort = data.defaultReasoningEffort;
       }
     }
 
@@ -387,6 +473,7 @@ export default function visionToolExtension(pi: ExtensionAPI) {
         config.model = undefined;
         config.maxDimension = parseInt(process.env.PI_VISION_MAX_DIM ?? "1568", 10);
         config.jpegQuality = parseInt(process.env.PI_VISION_JPEG_QUALITY ?? "85", 10);
+        config.defaultReasoningEffort = validateReasoningLevel(process.env.PI_VISION_REASONING_EFFORT) ?? "off";
         saveConfigFile();
         persistConfig();
         updateStatus(ctx);
@@ -465,8 +552,28 @@ export default function visionToolExtension(pi: ExtensionAPI) {
           return;
         }
 
+        if (setting === "reasoning-effort" || setting === "reasoning" || setting === "thinking") {
+          if (!value) {
+            ctx.ui.notify(`Current reasoning effort: ${config.defaultReasoningEffort}`, "info");
+            return;
+          }
+          const level = validateReasoningLevel(value);
+          if (!level) {
+            ctx.ui.notify(
+              `Invalid reasoning level: "${value}". Use: ${REASONING_LEVELS.join(", ")}`,
+              "error",
+            );
+            return;
+          }
+          config.defaultReasoningEffort = level;
+          saveConfigFile();
+          persistConfig();
+          ctx.ui.notify(`Reasoning effort set to "${config.defaultReasoningEffort}"`, "info");
+          return;
+        }
+
         ctx.ui.notify(
-          `Unknown config setting: "${setting}". Use: provider, model, max-dim, or quality`,
+          `Unknown config setting: "${setting}". Use: provider, model, max-dim, quality, reasoning-effort`,
           "error",
         );
         return;
@@ -552,6 +659,7 @@ export default function visionToolExtension(pi: ExtensionAPI) {
       "Use describe_image when you need to understand the visual content of any image (screenshot, diagram, photo, etc.). Provide a specific prompt describing exactly what information you need from the image.",
       "For most tasks (descriptions, text extraction, general analysis), use compress: true.",
       "Only set compress: false for pixel-perfect accuracy (exact coordinates or fine-detail inspection).",
+      "For simple/fast queries, set reasoning: 'off' to get quick responses. For complex analysis (architecture diagrams, debugging screenshots, multi-step visual reasoning), set reasoning to 'medium', 'high', or 'xhigh' to get deeper analysis. Omit the parameter to use the configured default.",
     ],
     parameters: Type.Object({
       image_path: Type.String({
@@ -566,6 +674,17 @@ export default function visionToolExtension(pi: ExtensionAPI) {
         description:
           "Whether to compress the image before sending. Use true for most tasks (faster, fewer tokens). Use false when pixel-perfect accuracy is needed (exact coordinates, fine text, color precision).",
       }),
+      reasoning: Type.Optional(Type.Union([
+        Type.Literal("off"),
+        Type.Literal("minimal"),
+        Type.Literal("low"),
+        Type.Literal("medium"),
+        Type.Literal("high"),
+        Type.Literal("xhigh"),
+      ], {
+        description:
+          "Reasoning effort for the vision model. Use 'off' for fast/cheap queries (e.g., 'what color is this?'), and higher levels for complex analysis (e.g., architecture diagrams, debugging screenshots). Only applies to models with reasoning: true. Falls back to the configured default if omitted.",
+      })),
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       // Validate configuration
@@ -647,16 +766,31 @@ export default function visionToolExtension(pi: ExtensionAPI) {
         };
       }
 
+      // Determine reasoning level: tool parameter > default config
+      const rawReasoning: string | undefined = (params as any).reasoning;
+      let reasoningLevel = config.defaultReasoningEffort;
+      if (rawReasoning !== undefined && rawReasoning !== null) {
+        const parsed = validateReasoningLevel(rawReasoning);
+        if (parsed) {
+          reasoningLevel = parsed;
+        }
+      }
+
       const compressLabel = compress
         ? `compressed (${(imageData.data.length / 1024).toFixed(0)}KB base64)`
         : `raw (${(imageData.data.length / 1024).toFixed(0)}KB base64)`;
+
+      const reasoningLabel =
+        visionModel.reasoning && reasoningLevel !== "off"
+          ? `, reasoning: ${reasoningLevel}`
+          : "";
 
       // Notify UI
       onUpdate?.({
         content: [
           {
             type: "text",
-            text: `Analyzing image with ${config.model} (${compressLabel})...`,
+            text: `Analyzing image with ${config.model} (${compressLabel}${reasoningLabel})...`,
           },
         ],
       });
@@ -670,6 +804,7 @@ export default function visionToolExtension(pi: ExtensionAPI) {
           imageData.mimeType,
           params.prompt,
           signal,
+          reasoningLevel,
         );
 
         return {
@@ -679,6 +814,7 @@ export default function visionToolExtension(pi: ExtensionAPI) {
             image_path: params.image_path,
             prompt: params.prompt,
             compressed: compress,
+            reasoning: reasoningLevel,
           },
         };
       } catch (err) {
