@@ -47,6 +47,29 @@ For vision models with `reasoning: true`, the calling model can choose the reaso
 
 When omitted, the tool uses the configured default (off by default). The calling model should decide based on task complexity — similar to how it picks `compress: true/false`. Read the [models.md](https://github.com/earendil-works/pi-coding-agent/blob/main/docs/models.md#thinking-level-map) thinking level map section for per-model tuning.
 
+**Important:** For non-OpenAI vision models (Qwen, llama.cpp, DeepSeek, etc.), you must set `compat.thinkingFormat` in `models.json` so the tool sends the correct parameter. Without it, the tool defaults to `reasoning_effort` (OpenAI format), which your provider may reject.
+
+```json
+{
+  "id": "qwen3.5",
+  "reasoning": true,
+  "input": ["text", "image"],
+  "compat": {
+    "thinkingFormat": "qwen"
+  }
+}
+```
+
+Supported formats:
+
+| Format | API parameter sent | Use case |
+|---|---|---|
+| (default, no compat) | `reasoning_effort` | OpenAI, any OpenAI-compatible proxy |
+| `qwen` | `enable_thinking` | Qwen via llama.cpp, vLLM, Ollama |
+| `qwen-chat-template` | `chat_template_kwargs.enable_thinking` | llama-server with Qwen chat template |
+| `deepseek` | `reasoning: { effort }` | DeepSeek API |
+| `openrouter` | `reasoning: { effort }` | OpenRouter |
+
 Set the default reasoning level via:
 ```bash
 /vision config reasoning-effort medium
