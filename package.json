@@ -1,6 +1,6 @@
 {
   "name": "pi-vision-tool",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Pi Agent extension that adds a describe_image tool, letting non-multimodal models delegate image analysis to a vision-capable model (like Qwen VL)",
   "keywords": [
     "pi-package",
