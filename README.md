@@ -98,11 +98,9 @@ In any Pi session with the extension loaded:
 /vision config model my-vision-model
 ```
 
-Settings are saved to `~/.pi/agent/vision-tool.json` and persist across all sessions.
+Settings are saved to `~/.pi/agent/vision-tool.json` and persist across all sessions. Changes take effect immediately — no `/reload` or restart needed.
 
 Run `/vision` with no arguments to see current configuration.
-
-> **Note:** After running `/vision config` for the first time, the change won't take effect until you reload the extension with `/reload` or restart Pi. On subsequent sessions the config file is read automatically on startup.
 
 **Legacy: Environment variables**
 
