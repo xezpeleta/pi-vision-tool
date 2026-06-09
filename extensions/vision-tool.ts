@@ -15,9 +15,7 @@
  *   Use `/vision config provider my-provider` and `/vision config model my-vision-model`
  *   to set the vision model. Settings are saved to `~/.pi/agent/vision-tool.json`
  *   and persist across all sessions. Run `/vision` with no arguments to see
- *   current configuration.
- *
- *   Note: after /vision config, /reload or restart for the change to take effect.
+ *   current configuration. Changes take effect immediately — no /reload needed.
  *
  * **Legacy: environment variables**
  *   PI_VISION_PROVIDER=my-provider  PI_VISION_MODEL=my-vision-model
