@@ -88,6 +88,30 @@ export PI_VISION_MODEL=my-vision-model
 
 These tell the tool which provider and model to use for image analysis.
 
+### 4. (Optional) Install sharp for image compression
+
+```bash
+npm install sharp
+```
+
+If `sharp` is available, images are automatically compressed before sending:
+- Downscaled to 1568px max dimension (screenshots, high-res photos)
+- Alpha channel stripped (RGBA → RGB)
+- Lossless PNG converted to JPEG (quality 85)
+
+This reduces payload size ~4x and speeds up responses significantly.
+Without `sharp`, images are sent as raw bytes.
+
+### Compression controls
+
+| Env var | Default | Description |
+|---|---|---|
+| `PI_VISION_COMPRESS` | `true` | Set to `false` to disable all compression |
+| `PI_VISION_MAX_DIM` | `1568` | Max width/height in pixels before downscaling |
+| `PI_VISION_JPEG_QUALITY` | `85` | JPEG quality (1-100) for converted images |
+
+The model can also override per-call by setting `compress: false` in the tool parameters (useful when pixel-perfect accuracy is needed).
+
 ## Usage
 
 Once installed, any model in your session will see the `describe_image` tool. Just reference an image in your prompt and the model will call it automatically.
@@ -120,8 +144,9 @@ The tool:
 1. Resolves the vision model from Pi's model registry using `ctx.modelRegistry.find()`
 2. Resolves the API key via `ctx.modelRegistry.getApiKeyAndHeaders()`
 3. Decodes the image (file path, data URL, or raw base64)
-4. Makes a direct OpenAI-compatible `/chat/completions` call to the vision model's base URL
-5. Returns the vision model's text response as the tool result
+4. Optionally compresses the image (resize, strip alpha, convert to JPEG) via `sharp`
+5. Makes a direct OpenAI-compatible `/chat/completions` call to the vision model's base URL
+6. Returns the vision model's text response as the tool result
 
 ## License
 

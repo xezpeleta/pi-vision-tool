@@ -17,6 +17,16 @@
  * Make sure the provider and model are defined in ~/.pi/agent/models.json
  * with `input: ["text", "image"]`.
  *
+ * ## Compression
+ *
+ * Images are automatically preprocessed to reduce payload size and token count:
+ * - Downscaled to 1568px max dimension (configurable via PI_VISION_MAX_DIM)
+ * - Alpha channel stripped (RGBA → RGB)
+ * - Lossless PNG converted to JPEG (quality 85, configurable via PI_VISION_JPEG_QUALITY)
+ *
+ * Set PI_VISION_COMPRESS=false to disable all preprocessing (send raw bytes).
+ * Requires `sharp` for image processing. Falls back to raw bytes if not installed.
+ *
  * ## Usage
  *
  * The `prompt` parameter is a free-text instruction, so the calling model can ask
@@ -41,9 +51,16 @@ import type { Api } from "@earendil-works/pi-ai";
 const VISION_PROVIDER = process.env.PI_VISION_PROVIDER;
 const VISION_MODEL_ID = process.env.PI_VISION_MODEL;
 
-if (!VISION_PROVIDER || !VISION_MODEL_ID) {
-  // Defer error to tool execution time with a helpful message
-}
+/** Disable all image preprocessing when set to "false" or "0". */
+const COMPRESS_ENABLED = !["false", "0"].includes(
+  (process.env.PI_VISION_COMPRESS ?? "true").toLowerCase(),
+);
+
+/** Maximum image dimension (width or height). Larger images are downscaled proportionally. */
+const MAX_IMAGE_DIM = parseInt(process.env.PI_VISION_MAX_DIM ?? "1568", 10);
+
+/** JPEG quality when converting from lossless formats (1-100). */
+const JPEG_QUALITY = parseInt(process.env.PI_VISION_JPEG_QUALITY ?? "85", 10);
 
 const VISION_SYSTEM_PROMPT = [
   "You are an expert vision analysis assistant.",
@@ -58,20 +75,32 @@ const VISION_SYSTEM_PROMPT = [
   "- Structure your response clearly with markdown formatting when appropriate.",
 ].join("\n");
 
-async function imageToBase64(pathOrData: string): Promise<{ mimeType: string; data: string }> {
+async function imageToBase64(
+  pathOrData: string,
+  compress: boolean,
+): Promise<{ mimeType: string; data: string }> {
   // If it looks like a base64 data URL, parse it
   if (pathOrData.startsWith("data:")) {
     const match = /^data:([^;]+);base64,(.+)$/.exec(pathOrData);
-    if (match) return { mimeType: match[1], data: match[2] };
+    if (match) {
+      const buffer = Buffer.from(match[2], "base64");
+      return compress
+        ? await optimizeImage(buffer, match[1])
+        : { mimeType: match[1], data: match[2] };
+    }
   }
 
   // If it's raw base64 without a data URL prefix, try to detect
   if (/^[A-Za-z0-9+/=]+$/.test(pathOrData) && pathOrData.length > 100) {
-    return { mimeType: "image/png", data: pathOrData };
+    const buffer = Buffer.from(pathOrData, "base64");
+    return compress
+      ? await optimizeImage(buffer, "image/png")
+      : { mimeType: "image/png", data: pathOrData };
   }
 
   // Otherwise treat as a file path
   const resolvedPath = resolve(pathOrData);
+  const buffer = await readFile(resolvedPath);
   const ext = resolvedPath.split(".").pop()?.toLowerCase() ?? "png";
   const mimeMap: Record<string, string> = {
     png: "image/png",
@@ -82,8 +111,60 @@ async function imageToBase64(pathOrData: string): Promise<{ mimeType: string; da
     bmp: "image/bmp",
   };
   const mimeType = mimeMap[ext] ?? "image/png";
-  const buffer = await readFile(resolvedPath);
-  return { mimeType, data: buffer.toString("base64") };
+  return compress
+    ? await optimizeImage(buffer, mimeType)
+    : { mimeType, data: buffer.toString("base64") };
+}
+
+/**
+ * Optimize an image before sending to the vision model.
+ * - Downscales if larger than MAX_IMAGE_DIM on either axis
+ * - Strips alpha channel (RGBA → RGB)
+ * - Converts lossless PNG to JPEG for smaller payload
+ * Falls back to raw bytes if sharp is not available.
+ */
+async function optimizeImage(
+  buffer: Buffer,
+  originalMime: string,
+): Promise<{ mimeType: string; data: string }> {
+  if (buffer.length === 0) {
+    return { mimeType: originalMime, data: "" };
+  }
+
+  try {
+    // Dynamic import — users who don't have sharp installed get raw bytes
+    const sharp = (await import("sharp")).default;
+    let pipeline = sharp(buffer);
+    const metadata = await pipeline.metadata();
+    const width = metadata.width ?? 0;
+    const height = metadata.height ?? 0;
+
+    // Downscale if needed
+    if (width > MAX_IMAGE_DIM || height > MAX_IMAGE_DIM) {
+      pipeline = pipeline.resize(MAX_IMAGE_DIM, MAX_IMAGE_DIM, {
+        fit: "inside",
+        withoutEnlargement: true,
+      });
+    }
+
+    // Strip alpha — vision models often don't need it and it wastes tokens
+    if (metadata.hasAlpha || metadata.channels === 4) {
+      pipeline = pipeline.removeAlpha();
+    }
+
+    // Convert to JPEG for smaller payload (except GIF)
+    if (originalMime !== "image/gif") {
+      const optimized = await pipeline.jpeg({ quality: JPEG_QUALITY }).toBuffer();
+      return { mimeType: "image/jpeg", data: optimized.toString("base64") };
+    }
+
+    // Keep GIF as-is (sharp can't re-encode animated GIF well)
+    const optimized = await pipeline.toBuffer();
+    return { mimeType: originalMime, data: optimized.toString("base64") };
+  } catch {
+    // sharp not available or decode failed — send raw bytes
+    return { mimeType: originalMime, data: buffer.toString("base64") };
+  }
 }
 
 async function callVisionModel(
@@ -164,10 +245,14 @@ export default function visionToolExtension(pi: ExtensionAPI) {
       '- Coordinates: "Give pixel coordinates [x,y,w,h] of the red button"',
       '- Text: "Extract all visible text, preserving structure"',
       '- Analysis: "Is there a compiler error shown? What does it say?"',
+      "",
+      "Set `compress` to false when you need pixel-perfect precision (e.g., exact coordinates).",
+      "Compression reduces payload ~4x and speeds up responses, but may lose fine details.",
     ].join("\n"),
     promptSnippet: "Analyze the provided image and respond to the prompt",
     promptGuidelines: [
       "Use describe_image when you need to understand the visual content of any image (screenshot, diagram, photo, etc.). Provide a specific prompt describing exactly what information you need from the image.",
+      "For most tasks (descriptions, text extraction, general analysis), use compress=true (default). Only set compress=false when you need pixel-perfect accuracy (exact coordinates, fine-detail inspection).",
     ],
     parameters: Type.Object({
       image_path: Type.String({
@@ -178,24 +263,33 @@ export default function visionToolExtension(pi: ExtensionAPI) {
         description:
           "What to analyze or extract from the image. Be specific: 'Describe all UI elements and their positions', 'Read all text in this screenshot', 'What error is shown?', 'Give coordinates of the submit button', etc.",
       }),
+      compress: Type.Optional(
+        Type.Boolean({
+          default: COMPRESS_ENABLED,
+          description:
+            "Compress the image before sending (downscale, strip alpha, convert to JPEG). Enabled by default — faster and uses fewer tokens. Set to false for pixel-perfect analysis.",
+        }),
+      ),
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       // Validate configuration
       if (!VISION_PROVIDER || !VISION_MODEL_ID) {
         return {
-          content: [{
-            type: "text",
-            text: [
-              "Vision tool is not configured.",
-              "",
-              "Set the PI_VISION_PROVIDER and PI_VISION_MODEL environment variables",
-              "to point to a vision-capable model in your models.json.",
-              "",
-              "Example:",
-              "  export PI_VISION_PROVIDER=my-provider",
-              "  export PI_VISION_MODEL=my-vision-model",
-            ].join("\n"),
-          }],
+          content: [
+            {
+              type: "text",
+              text: [
+                "Vision tool is not configured.",
+                "",
+                "Set the PI_VISION_PROVIDER and PI_VISION_MODEL environment variables",
+                "to point to a vision-capable model in your models.json.",
+                "",
+                "Example:",
+                "  export PI_VISION_PROVIDER=my-provider",
+                "  export PI_VISION_MODEL=my-vision-model",
+              ].join("\n"),
+            },
+          ],
           details: { error: "not_configured" },
           isError: true,
         };
@@ -239,9 +333,10 @@ export default function visionToolExtension(pi: ExtensionAPI) {
       }
 
       // Decode the image
+      const compress = params.compress ?? COMPRESS_ENABLED;
       let imageData: { mimeType: string; data: string };
       try {
-        imageData = await imageToBase64(params.image_path);
+        imageData = await imageToBase64(params.image_path, compress);
       } catch (err) {
         return {
           content: [
@@ -255,9 +350,18 @@ export default function visionToolExtension(pi: ExtensionAPI) {
         };
       }
 
+      const compressLabel = compress
+        ? `compressed (${(imageData.data.length / 1024).toFixed(0)}KB base64)`
+        : `raw (${(imageData.data.length / 1024).toFixed(0)}KB base64)`;
+
       // Notify UI
       onUpdate?.({
-        content: [{ type: "text", text: `Analyzing image with ${VISION_MODEL_ID}...` }],
+        content: [
+          {
+            type: "text",
+            text: `Analyzing image with ${VISION_MODEL_ID} (${compressLabel})...`,
+          },
+        ],
       });
 
       // Call the vision model
@@ -277,6 +381,7 @@ export default function visionToolExtension(pi: ExtensionAPI) {
             model: `${VISION_PROVIDER}/${VISION_MODEL_ID}`,
             image_path: params.image_path,
             prompt: params.prompt,
+            compressed: compress,
           },
         };
       } catch (err) {

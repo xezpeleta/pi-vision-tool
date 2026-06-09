@@ -15,5 +15,8 @@
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
+  },
+  "optionalDependencies": {
+    "sharp": "^0.33.0"
   }
 }
