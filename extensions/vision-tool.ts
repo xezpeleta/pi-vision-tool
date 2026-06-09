@@ -51,11 +51,6 @@ import type { Api } from "@earendil-works/pi-ai";
 const VISION_PROVIDER = process.env.PI_VISION_PROVIDER;
 const VISION_MODEL_ID = process.env.PI_VISION_MODEL;
 
-/** Disable all image preprocessing when set to "false" or "0". */
-const COMPRESS_ENABLED = !["false", "0"].includes(
-  (process.env.PI_VISION_COMPRESS ?? "true").toLowerCase(),
-);
-
 /** Maximum image dimension (width or height). Larger images are downscaled proportionally. */
 const MAX_IMAGE_DIM = parseInt(process.env.PI_VISION_MAX_DIM ?? "1568", 10);
 
@@ -246,13 +241,18 @@ export default function visionToolExtension(pi: ExtensionAPI) {
       '- Text: "Extract all visible text, preserving structure"',
       '- Analysis: "Is there a compiler error shown? What does it say?"',
       "",
-      "Set `compress` to false when you need pixel-perfect precision (e.g., exact coordinates).",
-      "Compression reduces payload ~4x and speeds up responses, but may lose fine details.",
+      "Set `compress` to control image optimization:",
+      "- `true`: Resize large images, strip alpha, convert to JPEG (~4x faster, fewer tokens).",
+      "  Use for general descriptions, text extraction, UI analysis.",
+      "- `false`: Send raw pixels unchanged.",
+      "  Use when you need pixel-perfect analysis: exact coordinates, fine text, color accuracy.",
+      "IMPORTANT: Always decide between true/false based on what the user needs.",
     ].join("\n"),
     promptSnippet: "Analyze the provided image and respond to the prompt",
     promptGuidelines: [
       "Use describe_image when you need to understand the visual content of any image (screenshot, diagram, photo, etc.). Provide a specific prompt describing exactly what information you need from the image.",
-      "For most tasks (descriptions, text extraction, general analysis), use compress=true (default). Only set compress=false when you need pixel-perfect accuracy (exact coordinates, fine-detail inspection).",
+      "For most tasks (descriptions, text extraction, general analysis), use compress: true.",
+      "Only set compress: false for pixel-perfect accuracy (exact coordinates or fine-detail inspection).",
     ],
     parameters: Type.Object({
       image_path: Type.String({
@@ -263,13 +263,10 @@ export default function visionToolExtension(pi: ExtensionAPI) {
         description:
           "What to analyze or extract from the image. Be specific: 'Describe all UI elements and their positions', 'Read all text in this screenshot', 'What error is shown?', 'Give coordinates of the submit button', etc.",
       }),
-      compress: Type.Optional(
-        Type.Boolean({
-          default: COMPRESS_ENABLED,
-          description:
-            "Compress the image before sending (downscale, strip alpha, convert to JPEG). Enabled by default — faster and uses fewer tokens. Set to false for pixel-perfect analysis.",
-        }),
-      ),
+      compress: Type.Boolean({
+        description:
+          "Whether to compress the image before sending. Use true for most tasks (faster, fewer tokens). Use false when pixel-perfect accuracy is needed (exact coordinates, fine text, color precision).",
+      }),
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       // Validate configuration
@@ -333,7 +330,7 @@ export default function visionToolExtension(pi: ExtensionAPI) {
       }
 
       // Decode the image
-      const compress = params.compress ?? COMPRESS_ENABLED;
+      const compress = params.compress;
       let imageData: { mimeType: string; data: string };
       try {
         imageData = await imageToBase64(params.image_path, compress);
