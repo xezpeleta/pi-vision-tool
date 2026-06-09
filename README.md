@@ -21,7 +21,15 @@ A [Pi Agent](https://github.com/earendil-works/pi-coding-agent) extension that a
 
 ## Installation
 
-### Via Git (recommended)
+### Via npm (recommended)
+
+```bash
+pi install npm:pi-vision-tool
+```
+
+This is the primary installation method and the way it's listed in the [Pi package gallery](https://pi.dev/packages).
+
+### Via git
 
 ```bash
 pi install git:github.com/xezpeleta/pi-vision-tool
@@ -106,11 +114,10 @@ Without `sharp`, images are sent as raw bytes.
 
 | Env var | Default | Description |
 |---|---|---|
-| `PI_VISION_COMPRESS` | `true` | Set to `false` to disable all compression |
 | `PI_VISION_MAX_DIM` | `1568` | Max width/height in pixels before downscaling |
 | `PI_VISION_JPEG_QUALITY` | `85` | JPEG quality (1-100) for converted images |
 
-The model can also override per-call by setting `compress: false` in the tool parameters (useful when pixel-perfect accuracy is needed).
+The calling model controls per-call compression via the `compress` parameter. Set `compress: false` when pixel-perfect accuracy is needed (e.g., reading coordinates or detecting small UI elements).
 
 ## Usage
 
