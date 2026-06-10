@@ -94,12 +94,14 @@ interface VisionConfig {
   maxDimension: number;
   jpegQuality: number;
   defaultReasoningEffort: ReasoningLevel;
+  enabled: boolean;
 }
 
 let config: VisionConfig = {
   maxDimension: parseInt(process.env.PI_VISION_MAX_DIM ?? "1568", 10),
   jpegQuality: parseInt(process.env.PI_VISION_JPEG_QUALITY ?? "85", 10),
   defaultReasoningEffort: "off",
+  enabled: true,
 };
 
 const VISION_SYSTEM_PROMPT = [
@@ -130,6 +132,7 @@ function loadConfigFile(): VisionConfig | null {
       maxDimension: raw.maxDimension ?? config.maxDimension,
       jpegQuality: raw.jpegQuality ?? config.jpegQuality,
       defaultReasoningEffort: validateReasoningLevel(raw.defaultReasoningEffort) ?? config.defaultReasoningEffort,
+      enabled: raw.enabled !== false,
     };
   } catch {
     return null;
@@ -180,6 +183,7 @@ function resolveConfig(): VisionConfig {
       parseInt(process.env.PI_VISION_JPEG_QUALITY ?? "85", 10),
     defaultReasoningEffort:
       fileCfg?.defaultReasoningEffort ?? envReasoning ?? "off",
+    enabled: fileCfg?.enabled !== false,
   };
 }
 
@@ -197,11 +201,13 @@ function configSummary(): string {
     `  Max dim:           ${config.maxDimension}px`,
     `  JPEG quality:      ${config.jpegQuality}`,
     `  Reasoning effort:  ${config.defaultReasoningEffort}`,
+    `  Enabled:           ${config.enabled ? "yes" : "no"}`,
     ``,
     `Config file: ${CONFIG_PATH}`,
     ``,
     "Use /vision config <setting> <value> to set:",
     "  provider, model, max-dim, quality, reasoning-effort",
+    "Use /vision on|off to enable or disable the tool",
   ].join("\n");
 }
 
@@ -449,6 +455,7 @@ export default function visionToolExtension(pi: ExtensionAPI) {
         if (data?.maxDimension !== undefined) config.maxDimension = data.maxDimension;
         if (data?.jpegQuality !== undefined) config.jpegQuality = data.jpegQuality;
         if (data?.defaultReasoningEffort !== undefined) config.defaultReasoningEffort = data.defaultReasoningEffort;
+        if (data?.enabled !== undefined) config.enabled = data.enabled;
       }
     }
 
@@ -468,13 +475,33 @@ export default function visionToolExtension(pi: ExtensionAPI) {
   // -----------------------------------------------------------------------
 
   pi.registerCommand("vision", {
-    description: "Vision tool settings (config, show, clear)",
+    description: "Vision tool settings (config, show, clear, on, off)",
     handler: async (args, ctx) => {
       const trimmed = args?.trim() ?? "";
 
       // No args: show current config
       if (!trimmed) {
         ctx.ui.notify(configSummary(), "info");
+        return;
+      }
+
+      // /vision on — enable the tool
+      if (trimmed === "on") {
+        config.enabled = true;
+        saveConfigFile();
+        persistConfig();
+        updateStatus(ctx);
+        ctx.ui.notify("Vision tool enabled. The 👁 indicator is now visible in the footer.", "info");
+        return;
+      }
+
+      // /vision off — disable the tool
+      if (trimmed === "off") {
+        config.enabled = false;
+        saveConfigFile();
+        persistConfig();
+        updateStatus(ctx);
+        ctx.ui.notify("Vision tool disabled. The 👁 indicator will be hidden and describe_image calls will return an error.", "info");
         return;
       }
 
@@ -496,6 +523,7 @@ export default function visionToolExtension(pi: ExtensionAPI) {
         config.maxDimension = parseInt(process.env.PI_VISION_MAX_DIM ?? "1568", 10);
         config.jpegQuality = parseInt(process.env.PI_VISION_JPEG_QUALITY ?? "85", 10);
         config.defaultReasoningEffort = validateReasoningLevel(process.env.PI_VISION_REASONING_EFFORT) ?? "off";
+        config.enabled = true;
         saveConfigFile();
         persistConfig();
         updateStatus(ctx);
@@ -639,7 +667,7 @@ export default function visionToolExtension(pi: ExtensionAPI) {
    * Update the footer status bar to show current vision config.
    */
   function updateStatus(ctx: { ui: { setStatus: (id: string, text: string | undefined) => void } }) {
-    if (config.provider && config.model) {
+    if (config.provider && config.model && config.enabled) {
       ctx.ui.setStatus("vision", `👁 ${config.provider}/${config.model}`);
     } else {
       ctx.ui.setStatus("vision", undefined);
@@ -709,6 +737,24 @@ export default function visionToolExtension(pi: ExtensionAPI) {
       })),
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      // Check if the tool is disabled
+      if (!config.enabled) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: [
+                "Vision tool is currently disabled.",
+                "",
+                "Use /vision on to enable it.",
+              ].join("\n"),
+            },
+          ],
+          details: { error: "tool_disabled" },
+          isError: true,
+        };
+      }
+
       // Validate configuration
       if (!config.provider || !config.model) {
         return {
