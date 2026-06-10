@@ -73,6 +73,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { Model } from "@earendil-works/pi-ai";
 import type { Api } from "@earendil-works/pi-ai";
+import { Text } from "@earendil-works/pi-tui";
 
 // ---------------------------------------------------------------------------
 // Config file path
@@ -736,6 +737,18 @@ export default function visionToolExtension(pi: ExtensionAPI) {
           "Reasoning effort for the vision model. Use 'off' for fast/cheap queries (e.g., 'what color is this?'), and higher levels for complex analysis (e.g., architecture diagrams, debugging screenshots). Only applies to models with reasoning: true. Falls back to the configured default if omitted.",
       })),
     }),
+    renderCall(args, theme, _context) {
+      const modelLine = theme.fg("toolTitle", theme.bold(`describe_image via ${config.provider}/${config.model}`));
+      const promptLine = theme.fg("dim", `prompt: ${args.prompt}`);
+      const flags: string[] = [];
+      flags.push(args.compress ? "compress: true" : "compress: false");
+      const reasoningLevel = args.reasoning ?? config.defaultReasoningEffort;
+      if (reasoningLevel !== "off") {
+        flags.push(`reasoning: ${reasoningLevel}`);
+      }
+      const flagsLine = theme.fg("dim", flags.join(", "));
+      return new Text(`${modelLine}\n  ${promptLine}\n  ${flagsLine}`, 0, 0);
+    },
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       // Check if the tool is disabled
       if (!config.enabled) {
