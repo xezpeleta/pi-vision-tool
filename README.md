@@ -160,6 +160,15 @@ Settings are saved to `~/.pi/agent/vision-tool.json` and persist across all sess
 
 Run `/vision` with no arguments to see current configuration.
 
+**Enable / disable**
+
+```
+/vision on
+/vision off
+```
+
+Running `/vision off` disables the tool entirely: the 👁 indicator disappears from the footer and any `describe_image` call returns an error. Use `/vision on` to re-enable it. The toggle is persisted across sessions.
+
 **Legacy: Environment variables**
 
 ```bash

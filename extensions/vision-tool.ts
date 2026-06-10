@@ -853,7 +853,7 @@ export default function visionToolExtension(pi: ExtensionAPI) {
           ? `, reasoning: ${reasoningLevel}`
           : "";
 
-      // Notify UI
+      // Static initial update in the tool output
       onUpdate?.({
         content: [
           {
@@ -862,6 +862,20 @@ export default function visionToolExtension(pi: ExtensionAPI) {
           },
         ],
       });
+
+      // Animated spinner in the footer status line
+      const spinnerFrames = ["◐", "◓", "◑", "◒"];
+      let spinnerIndex = 0;
+      let spinnerTimer: ReturnType<typeof setInterval> | null = null;
+
+      if (config.enabled) {
+        const updateSpinner = () => {
+          spinnerIndex = (spinnerIndex + 1) % spinnerFrames.length;
+          ctx.ui.setStatus("vision", `${spinnerFrames[spinnerIndex]} ${config.provider}/${config.model}`);
+        };
+        updateSpinner();
+        spinnerTimer = setInterval(updateSpinner, 200);
+      }
 
       // Call the vision model
       try {
@@ -896,6 +910,12 @@ export default function visionToolExtension(pi: ExtensionAPI) {
           details: { error: "vision_call_error" },
           isError: true,
         };
+      } finally {
+        if (spinnerTimer) clearInterval(spinnerTimer);
+        // Restore the static indicator
+        if (config.enabled) {
+          ctx.ui.setStatus("vision", `👁 ${config.provider}/${config.model}`);
+        }
       }
     },
   });
