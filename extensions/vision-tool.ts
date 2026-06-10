@@ -313,34 +313,47 @@ async function optimizeImage(
  *
  * Only sends reasoning params when:
  * - The vision model has `reasoning: true`
- * - The effective reasoning level is not "off"
+ * - The effective reasoning level (after thinkingLevelMap) is not mapped away
  *
  * Respects the model's `thinkingLevelMap` if defined,
  * and the model's `compat.thinkingFormat` for provider-specific formats:
  * - `qwen` / `qwen-chat-template`: sends `enable_thinking: true/false`
  * - `deepseek`: sends `reasoning: { effort }`
  * - `openrouter`: sends `reasoning: { effort }`
+ * - `together`: sends `reasoning: { enabled: boolean }`
  * - default (OpenAI): sends `reasoning_effort`
  */
 function buildReasoningParams(
   visionModel: Model<Api>,
   level: ReasoningLevel,
 ): Record<string, unknown> | undefined {
-  if (!visionModel.reasoning || level === "off") return undefined;
+  if (!visionModel.reasoning) return undefined;
 
-  // Resolve the effective value from thinkingLevelMap if present
+  // Resolve the effective value from thinkingLevelMap if present.
+  // thinkingLevelMap maps pi's level names ("off", "minimal", etc.) to
+  // provider-specific values. `null` means the level is unsupported.
   const levelMap = (visionModel as any).thinkingLevelMap as
     | Record<string, string | null>
     | undefined;
-  let effectiveLevel = level;
+
+  let effectiveLevel: string | null = level;
+  let mappedAway = false;
 
   if (levelMap) {
     const mapped = levelMap[level];
-    if (mapped === null) return undefined; // level explicitly unsupported
-    if (typeof mapped === "string") {
+    if (mapped === null) {
+      // Level explicitly unsupported — skip reasoning params entirely
+      return undefined;
+    }
+    if (mapped !== undefined) {
       effectiveLevel = mapped;
     }
   }
+
+  // After mapping, if the effective level means "off" (e.g. "none" for Kimi),
+  // we still need to send it — some providers require explicit "none" to
+  // disable reasoning that would otherwise be on by default.
+  // Only skip if thinkingLevelMap explicitly mapped to null above.
 
   // Determine the parameter format based on compat.thinkingFormat
   const compat = (visionModel as any).compat as
@@ -350,7 +363,9 @@ function buildReasoningParams(
 
   if (format === "qwen" || format === "qwen-chat-template") {
     // Qwen models use enable_thinking: true/false
-    const enable = effectiveLevel !== "off";
+    // When mapped to a non-standard value (e.g. thinkingLevelMap: {"off": "none"}),
+    // treat any value that isn't literally "off" as enabling thinking.
+    const enable = effectiveLevel !== "off" && effectiveLevel !== "none";
     if (format === "qwen-chat-template") {
       return { chat_template_kwargs: { enable_thinking: enable } };
     }
@@ -359,6 +374,15 @@ function buildReasoningParams(
 
   if (format === "deepseek" || format === "openrouter") {
     return { reasoning: { effort: effectiveLevel } };
+  }
+
+  if (format === "together") {
+    // Together AI uses reasoning.enabled bool + reasoning_effort
+    const enabled = effectiveLevel !== "off" && effectiveLevel !== "none";
+    if (!enabled) {
+      return { reasoning: { enabled: false } };
+    }
+    return { reasoning: { enabled: true }, reasoning_effort: effectiveLevel };
   }
 
   // Default: standard OpenAI reasoning_effort

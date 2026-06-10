@@ -73,6 +73,22 @@ Supported formats:
 | `qwen-chat-template` | `chat_template_kwargs.enable_thinking` | llama-server with Qwen chat template |
 | `deepseek` | `reasoning: { effort }` | DeepSeek API |
 | `openrouter` | `reasoning: { effort }` | OpenRouter |
+| `together` | `reasoning: { enabled: boolean }` + `reasoning_effort` | Together AI |
+
+Additionally, `thinkingLevelMap` in `models.json` maps pi's level names to provider-specific values.
+Use this when a provider uses non-standard level strings (e.g., Kimi K2.6 uses `"none"` instead of `"off"`):
+
+```json
+{
+  "id": "Kimi-K2.6",
+  "reasoning": true,
+  "input": ["text", "image"],
+  "thinkingLevelMap": {
+    "off": "none",
+    "xhigh": null
+  }
+}
+```
 
 Set the default reasoning level via:
 ```bash
