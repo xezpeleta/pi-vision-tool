@@ -451,10 +451,11 @@ async function callVisionModel(
   }
 
   const json = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
+    choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>;
   };
 
-  return json.choices?.[0]?.message?.content ?? "(no response from vision model)";
+  const msg = json.choices?.[0]?.message;
+  return msg?.content || msg?.reasoning_content || "(no response from vision model)";
 }
 
 // ---------------------------------------------------------------------------
