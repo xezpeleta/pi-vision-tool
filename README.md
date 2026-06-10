@@ -201,6 +201,10 @@ Without `sharp`, images are sent as raw bytes.
 
 The calling model controls per-call compression via the `compress` parameter. Set `compress: false` when pixel-perfect accuracy is needed (e.g., reading coordinates or detecting small UI elements).
 
+## Screenshots
+
+<p align="center"><img src="assets/pi-vision-tool-demo.png" alt="Pi Vision Tool screenshot" width="600"></p>
+
 ## Usage
 
 Once installed, any model in your session will see the `describe_image` tool. Just reference an image in your prompt and the model will call it automatically.
