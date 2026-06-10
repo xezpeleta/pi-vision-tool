@@ -2,6 +2,10 @@
 
 A [Pi Agent](https://github.com/earendil-works/pi-coding-agent) extension that adds a `describe_image` tool, letting **non-multimodal models** (like DeepSeek V4 Pro, GPT-5 Codex without image support, etc.) delegate image analysis to a vision-capable model.
 
+## Screenshots
+
+<p align="center"><img src="assets/pi-vision-tool-demo.png" alt="Pi Vision Tool screenshot" width="600"></p>
+
 ## Features
 
 The calling model has **full control** over every call, deciding what matters for each image:
@@ -200,10 +204,6 @@ Without `sharp`, images are sent as raw bytes.
 | `PI_VISION_JPEG_QUALITY` | `85` | JPEG quality (1-100) for converted images |
 
 The calling model controls per-call compression via the `compress` parameter. Set `compress: false` when pixel-perfect accuracy is needed (e.g., reading coordinates or detecting small UI elements).
-
-## Screenshots
-
-<p align="center"><img src="assets/pi-vision-tool-demo.png" alt="Pi Vision Tool screenshot" width="600"></p>
 
 ## Usage
 
