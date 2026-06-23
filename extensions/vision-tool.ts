@@ -740,7 +740,7 @@ export default function visionToolExtension(pi: ExtensionAPI) {
     parameters: Type.Object({
       image_path: Type.String({
         description:
-          "Path to image file, data URL (data:image/...;base64,...), or raw base64-encoded image data",
+          "Path to image file, data URL (data:image/...;base64,...), or raw base64-encoded image data. HTTP(S) URLs are NOT accepted.",
       }),
       prompt: Type.String({
         description:
