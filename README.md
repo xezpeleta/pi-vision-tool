@@ -36,6 +36,11 @@ This means the model itself decides the cost/quality tradeoff per call — no pr
 4. The vision model's text response is returned to the calling model as a tool result
 5. The calling model integrates the result into its reasoning
 
+> **Guard rail:** if the calling model already supports image input (its model entry has
+> `input: ["text", "image"]`), `describe_image` refuses the call with an error telling the
+> model to use the built-in `read` tool on the image file instead — delegating to a second
+> vision model would just waste tokens.
+
 ### Reasoning / extended thinking
 
 For vision models with `reasoning: true`, the calling model can choose the reasoning effort per call via the `reasoning` parameter:

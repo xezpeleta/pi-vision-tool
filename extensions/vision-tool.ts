@@ -729,10 +729,12 @@ export default function visionToolExtension(pi: ExtensionAPI) {
       "- `false`: Send raw pixels unchanged.",
       "  Use when you need pixel-perfect analysis: exact coordinates, fine text, color accuracy.",
       "IMPORTANT: Always decide between true/false based on what the user needs.",
+      "",
+      "NOTE: If your own model already supports image input, this tool will refuse the call — use the built-in `read` tool on the image file instead.",
     ].join("\n"),
     promptSnippet: "Analyze the provided image and respond to the prompt",
     promptGuidelines: [
-      "Use describe_image when you need to understand the visual content of any image (screenshot, diagram, photo, etc.). Provide a specific prompt describing exactly what information you need from the image.",
+      "Use describe_image when you need to understand the visual content of any image (screenshot, diagram, photo, etc.) AND your own model does not support image input. If your model supports images, use the built-in read tool instead — describe_image will refuse the call. Provide a specific prompt describing exactly what information you need from the image.",
       "For most tasks (descriptions, text extraction, general analysis), use compress: true.",
       "Only set compress: false for pixel-perfect accuracy (exact coordinates or fine-detail inspection).",
       "For simple/fast queries, set reasoning: 'off' to get quick responses. For complex analysis (architecture diagrams, debugging screenshots, multi-step visual reasoning), set reasoning to 'medium', 'high', or 'xhigh' to get deeper analysis. Omit the parameter to use the configured default.",
@@ -775,6 +777,31 @@ export default function visionToolExtension(pi: ExtensionAPI) {
       return new Text(`${modelLine}\n  ${promptLine}\n  ${flagsLine}`, 0, 0);
     },
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      // Refuse if the calling model itself already supports image input —
+      // it should use the built-in `read` tool, which attaches images natively.
+      const callerModel = ctx.model;
+      if (callerModel?.input?.includes("image")) {
+        const looksLikeFilePath =
+          !params.image_path.startsWith("data:") &&
+          !/^[A-Za-z0-9+/=]+$/.test(params.image_path);
+        return {
+          content: [
+            {
+              type: "text",
+              text: [
+                `describe_image call rejected: your current model "${callerModel.provider}/${callerModel.id}" already supports image input. Delegating to another vision model is unnecessary.`,
+                "",
+                looksLikeFilePath
+                  ? `Use the built-in \`read\` tool on the image file instead — it returns image content to you natively:\n  read({ path: "${params.image_path}" })`
+                  : "Ask the user for a file path to the image, then use the built-in `read` tool on it — it returns image content to you natively.",
+              ].join("\n"),
+            },
+          ],
+          details: { error: "caller_has_vision", callerModel: `${callerModel.provider}/${callerModel.id}` },
+          isError: true,
+        };
+      }
+
       // Check if the tool is disabled
       if (!config.enabled) {
         return {
