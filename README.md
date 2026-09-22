@@ -1,3 +1,5 @@
+
+
 # Pi Vision Tool
 
 A [Pi Agent](https://github.com/earendil-works/pi-coding-agent) extension that adds a `describe_image` tool, letting **non-multimodal models** (like DeepSeek V4 Pro, GPT-5 Codex without image support, etc.) delegate image analysis to a vision-capable model.
@@ -199,6 +201,8 @@ export PI_VISION_MODEL=my-vision-model
 Env vars work but must be set before starting Pi and don't persist between sessions. When a config file exists, it takes priority over env vars.
 
 ### 4. (Optional) Install sharp for image compression
+
+If `sharp` is not already available (it is declared as an optional dependency in `package.json`), install it:
 
 ```bash
 npm install sharp
